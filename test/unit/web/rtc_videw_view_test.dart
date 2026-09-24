@@ -43,8 +43,18 @@ void main() {
         'nodownload nofullscreen noremoteplayback');
     if (useHtmlElementView) {
       expect(video.style.userSelect, 'none');
+      web.document.body!.append(video);
+      renderer.mirror = true;
+      renderer.objectFit = 'cover';
+      expect(video.style.transform, 'scaleX(-1)');
+      expect(video.style.objectFit, 'cover');
+      renderer.mirror = false;
+      renderer.objectFit = 'contain';
+      expect(video.style.transform, '');
+      expect(video.style.objectFit, 'contain');
     }
     await renderer.dispose();
+    video.remove();
   });
 
   testWidgets('late texture image is released after unmount', (tester) async {
@@ -66,6 +76,33 @@ void main() {
     await pendingCapture;
     expect(image.debugDisposed, isTrue);
     await renderer.dispose();
+  });
+
+  testWidgets('renderer replacement releases an in-flight frame from A',
+      (tester) async {
+    if (useHtmlElementView) return;
+    final first = RTCVideoRenderer();
+    final second = RTCVideoRenderer();
+    await first.initialize();
+    await second.initialize();
+    final key = GlobalKey<CaptureState>();
+    await tester.pumpWidget(MaterialApp(home: CaptureView(first, key: key)));
+    final state = key.currentState!;
+    final capture = state.captureFrame();
+    await tester.pumpWidget(MaterialApp(home: CaptureView(second, key: key)));
+    expect(state.videoElement, same(second.findHtmlView()));
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder).drawColor(const Color(0xff000000), ui.BlendMode.src);
+    final picture = recorder.endRecording();
+    final image = await tester.runAsync(() => picture.toImage(1, 1));
+    picture.dispose();
+    state.pending.complete(image!);
+    await capture;
+    expect(image.debugDisposed, isTrue);
+    expect(state.capturedFrame, isNull);
+    await tester.pumpWidget(const SizedBox());
+    await first.dispose();
+    await second.dispose();
   });
 
   testWidgets('failed frame capture can recover on the next frame',
@@ -110,6 +147,9 @@ void main() {
     await tester.pumpWidget(view(first));
     expect(first.observed, isTrue);
     if (useHtmlElementView) {
+      expect(key.currentState!.videoElement, isNull);
+      expect(key.currentState!.callbackID, isNull);
+      await tester.pump(const Duration(milliseconds: 300));
       expect(key.currentState!.videoElement, isNull);
       expect(key.currentState!.callbackID, isNull);
     } else {

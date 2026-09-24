@@ -148,6 +148,7 @@ class RTCVideoViewState extends State<RTCVideoView> {
       _captureFailureLogged = false;
       return true;
     } on web.DOMException catch (error) {
+      if (!_owns(generation, element)) return false;
       lastFrameTime = null;
       if (error.name != 'InvalidStateError' && !_captureFailureLogged) {
         debugPrint('RTCVideoView: frame capture failed: $error');
