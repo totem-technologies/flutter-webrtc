@@ -78,6 +78,56 @@ void main() {
     await renderer.dispose();
   });
 
+  testWidgets('a new frame disposes the previously owned image',
+      (tester) async {
+    if (useHtmlElementView) return;
+    final renderer = RTCVideoRenderer();
+    await renderer.initialize();
+    final key = GlobalKey<CaptureState>();
+    await tester.pumpWidget(MaterialApp(home: CaptureView(renderer, key: key)));
+    final state = key.currentState!;
+    Future<ui.Image> image() async {
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawColor(const Color(0xff000000), ui.BlendMode.src);
+      final picture = recorder.endRecording();
+      final result = await tester.runAsync(() => picture.toImage(1, 1));
+      picture.dispose();
+      return result!;
+    }
+
+    final firstCapture = state.captureFrame();
+    final first = await image();
+    state.pending.complete(first);
+    await firstCapture;
+    state.lastFrameTime = null;
+    state.pending = Completer<ui.Image>();
+    final secondCapture = state.captureFrame();
+    final second = await image();
+    state.pending.complete(second);
+    await secondCapture;
+    expect(first.debugDisposed, isTrue);
+    expect(state.capturedFrame, same(second));
+    await tester.pumpWidget(const SizedBox());
+    expect(second.debugDisposed, isTrue);
+    await renderer.dispose();
+  });
+
+  testWidgets('unmount cancels a pending source video lookup', (tester) async {
+    if (useHtmlElementView) return;
+    final renderer = TrackingRenderer();
+    final key = GlobalKey<RTCVideoViewState>();
+    await tester
+        .pumpWidget(MaterialApp(home: RTCVideoView(renderer, key: key)));
+    final state = key.currentState!;
+    expect(state.videoElement, isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.videoElement, isNull);
+    expect(state.callbackID, isNull);
+    expect(renderer.observed, isFalse);
+    await renderer.dispose();
+  });
+
   testWidgets('renderer replacement releases an in-flight frame from A',
       (tester) async {
     if (useHtmlElementView) return;
