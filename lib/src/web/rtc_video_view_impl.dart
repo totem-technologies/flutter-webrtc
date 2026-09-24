@@ -148,6 +148,7 @@ class RTCVideoViewState extends State<RTCVideoView> {
       _captureFailureLogged = false;
       return true;
     } on web.DOMException catch (error) {
+      if (!_owns(generation, element)) return false;
       lastFrameTime = null;
       if (error.name != 'InvalidStateError' && !_captureFailureLogged) {
         debugPrint('RTCVideoView: frame capture failed: $error');
@@ -238,9 +239,10 @@ class RTCVideoViewState extends State<RTCVideoView> {
                       height: capturedFrame!.height.toDouble(),
                       child: CustomPaint(
                         willChange: true,
-                        painter: _ImageFlipPainter(
+                        painter: VideoFramePainter(
                           capturedFrame!,
                           widget.mirror,
+                          widget.filterQuality,
                         ),
                       ),
                     ),
@@ -300,32 +302,29 @@ extension _HTMLVideoElementRequestAnimationFrame on web.HTMLVideoElement {
   external void cancelVideoFrameCallback(int callbackID);
 }
 
-class _ImageFlipPainter extends CustomPainter {
-  _ImageFlipPainter(this.image, this.flip);
+@visibleForTesting
+class VideoFramePainter extends CustomPainter {
+  VideoFramePainter(this.image, this.flip, this.filterQuality);
 
   final ui.Image image;
   final bool flip;
+  final ui.FilterQuality filterQuality;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (flip) {
       canvas.scale(-1, 1);
-      canvas.drawImage(
-        image,
-        Offset(-size.width, 0),
-        Paint()..filterQuality = ui.FilterQuality.high,
-      );
-    } else {
-      canvas.drawImage(
-        image,
-        Offset(0, 0),
-        Paint()..filterQuality = ui.FilterQuality.high,
-      );
     }
+    canvas.drawImage(
+      image,
+      Offset(flip ? -size.width : 0, 0),
+      Paint()..filterQuality = filterQuality,
+    );
   }
 
   @override
-  bool shouldRepaint(CustomPainter oldDelegate) {
-    return false;
-  }
+  bool shouldRepaint(covariant VideoFramePainter oldDelegate) =>
+      image != oldDelegate.image ||
+      flip != oldDelegate.flip ||
+      filterQuality != oldDelegate.filterQuality;
 }
