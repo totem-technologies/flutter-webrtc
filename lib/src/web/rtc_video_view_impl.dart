@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:ui' as ui;
@@ -47,10 +46,10 @@ class RTCVideoViewState extends State<RTCVideoView> {
             ? 'contain'
             : 'cover';
 
-    videoElement =
-        web.document.getElementById("video_${videoRenderer.viewType}")
-            as web.HTMLVideoElement?;
-    frameCallback(0.toJS, 0.toJS);
+    if (!useHtmlElementView) {
+      videoElement = videoRenderer.findHtmlView();
+      frameCallback(0.toJS, 0.toJS);
+    }
   }
 
   void _onRendererListener() {
@@ -71,63 +70,74 @@ class RTCVideoViewState extends State<RTCVideoView> {
   }
 
   void frameCallback(JSAny now, JSAny metadata) {
-    final web.HTMLVideoElement? element = videoElement;
-    if (element != null) {
-      // only capture frames if video is playing (optimization for RAF)
-      if (element.readyState > 2) {
-        capture().then((_) async {
-          getFrame(element);
-        });
-      } else {
-        getFrame(element);
-      }
-    } else {
+    if (_disposed || useHtmlElementView) return;
+    final element = videoElement;
+    if (element == null) {
       if (mounted) {
-        Future.delayed(Duration(milliseconds: 100)).then((_) {
-          frameCallback(0.toJS, 0.toJS);
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (mounted && !_disposed) frameCallback(0.toJS, 0.toJS);
         });
       }
+      return;
+    }
+
+    if (element.readyState > 2) {
+      captureFrame().then((_) {
+        if (!_disposed) getFrame(element);
+      });
+    } else {
+      getFrame(element);
     }
   }
 
+  bool _disposed = false;
   ui.Image? capturedFrame;
   num? lastFrameTime;
-  Future<void> capture() async {
-    final element = videoElement!;
-    if (lastFrameTime != element.currentTime) {
-      lastFrameTime = element.currentTime;
-      try {
-        final ui.Image img = await ui_web.createImageFromTextureSource(element,
-            width: element.videoWidth,
-            height: element.videoHeight,
-            transferOwnership: true);
 
-        if (mounted) {
-          setState(() {
-            capturedFrame?.dispose();
-            capturedFrame = img;
-          });
-        }
-      } on web.DOMException catch (err) {
-        lastFrameTime = null;
-        if (err.name == 'InvalidStateError') {
-          // We don't have enough data yet, continue on
-        } else {
-          rethrow;
-        }
+  @visibleForTesting
+  Future<ui.Image> captureImage(web.HTMLVideoElement element) async {
+    return await ui_web.createImageFromTextureSource(element,
+        width: element.videoWidth,
+        height: element.videoHeight,
+        transferOwnership: true);
+  }
+
+  @visibleForTesting
+  Future<bool> captureFrame() async {
+    if (useHtmlElementView || videoElement == null) return false;
+    final element = videoElement!;
+    if (lastFrameTime == element.currentTime) return false;
+    lastFrameTime = element.currentTime;
+    try {
+      final image = await captureImage(element);
+      if (!mounted || _disposed) {
+        image.dispose();
+        return false;
       }
+      final previous = capturedFrame;
+      setState(() => capturedFrame = image);
+      previous?.dispose();
+      return true;
+    } on web.DOMException catch (err) {
+      lastFrameTime = null;
+      if (err.name == 'InvalidStateError') return false;
+      rethrow;
+    } catch (_) {
+      lastFrameTime = null;
+      return false;
     }
   }
 
   @override
   void dispose() {
-    if (mounted) {
-      super.dispose();
-    }
-    capturedFrame?.dispose();
-    if (videoElement != null) {
+    _disposed = true;
+    videoRenderer.removeListener(_onRendererListener);
+    if (!useHtmlElementView && videoElement != null) {
       cancelFrame(videoElement!);
     }
+    capturedFrame?.dispose();
+    capturedFrame = null;
+    super.dispose();
   }
 
   Size? size;
@@ -142,8 +152,12 @@ class RTCVideoViewState extends State<RTCVideoView> {
   @override
   void didUpdateWidget(RTCVideoView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    Timer(
-        Duration(milliseconds: 10), () => videoRenderer.mirror = widget.mirror);
+    if (oldWidget._renderer != widget._renderer) {
+      oldWidget._renderer.removeListener(_onRendererListener);
+      videoRenderer.addListener(_onRendererListener);
+      if (!useHtmlElementView) videoElement = videoRenderer.findHtmlView();
+    }
+    videoRenderer.mirror = widget.mirror;
     videoRenderer.objectFit =
         widget.objectFit == RTCVideoViewObjectFit.RTCVideoViewObjectFitContain
             ? 'contain'

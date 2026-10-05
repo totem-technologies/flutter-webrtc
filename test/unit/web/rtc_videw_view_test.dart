@@ -2,14 +2,16 @@
 library;
 
 import 'dart:async';
+import 'dart:js_interop';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:dart_webrtc/dart_webrtc.dart';
 import 'package:flutter_webrtc/src/web/rtc_video_renderer_impl.dart';
 import 'package:flutter_webrtc/src/web/rtc_video_view_impl.dart';
-import 'package:webrtc_interface/webrtc_interface.dart';
+
 import 'package:web/web.dart' as web;
 
 class TrackingRenderer extends RTCVideoRenderer {
@@ -23,6 +25,23 @@ class CaptureView extends RTCVideoView {
   RTCVideoViewState createState() => CaptureState();
 }
 
+class CaptureTrackingView extends RTCVideoView {
+  CaptureTrackingView(super.renderer, {super.key});
+
+  @override
+  RTCVideoViewState createState() => CaptureTrackingState();
+}
+
+class CaptureTrackingState extends RTCVideoViewState {
+  var captureCalls = 0;
+
+  @override
+  Future<bool> captureFrame() {
+    captureCalls++;
+    return super.captureFrame();
+  }
+}
+
 class CaptureState extends RTCVideoViewState {
   Completer<ui.Image> pending = Completer<ui.Image>();
 
@@ -31,6 +50,70 @@ class CaptureState extends RTCVideoViewState {
 }
 
 void main() {
+  testWidgets('HTML mode does not start captured-frame polling',
+      (tester) async {
+    if (!useHtmlElementView) return;
+    final renderer = TrackingRenderer();
+    await renderer.initialize();
+    final key = GlobalKey<CaptureTrackingState>();
+
+    await tester.pumpWidget(
+      MaterialApp(home: CaptureTrackingView(renderer, key: key)),
+    );
+
+    expect(key.currentState!.captureCalls, 0);
+    expect(key.currentState!.callbackID, isNull);
+    await renderer.dispose();
+  });
+
+  testWidgets('HTML stream updates preserve element and srcObject identity',
+      (tester) async {
+    if (!useHtmlElementView) return;
+    final renderer = TrackingRenderer();
+    final firstBrowserStream = web.HTMLCanvasElement().captureStream();
+    final secondBrowserStream = web.HTMLCanvasElement().captureStream();
+    final firstTrack = firstBrowserStream.getVideoTracks().toDart.single;
+    final secondTrack = secondBrowserStream.getVideoTracks().toDart.single;
+    final firstStream = MediaStreamWeb(firstBrowserStream, 'local');
+    final secondStream = MediaStreamWeb(secondBrowserStream, 'local');
+    renderer.srcObject = firstStream;
+    await renderer.initialize();
+
+    final element = renderer.createElement();
+    web.document.body!.append(element);
+    final browserStream = element.srcObject as web.MediaStream;
+    expect(browserStream.getVideoTracks().toDart.single.id, firstTrack.id);
+    expect(element.isConnected, isTrue);
+
+    renderer.srcObject = secondStream;
+    await tester.pump();
+
+    expect(renderer.findHtmlView(), same(element));
+    expect(element.srcObject, same(browserStream));
+    expect(browserStream.getVideoTracks().toDart.single.id, secondTrack.id);
+    expect(element.isConnected, isTrue);
+    expect(renderer.viewType, 'RTCVideoRenderer-${renderer.textureId}');
+    await renderer.dispose();
+    element.remove();
+  });
+
+  testWidgets('HTML renderer initialization and presentation are stable',
+      (tester) async {
+    if (!useHtmlElementView) return;
+    final renderer = TrackingRenderer();
+    await renderer.initialize();
+    await renderer.initialize();
+    final element = renderer.createElement();
+
+    renderer.mirror = true;
+    renderer.objectFit = 'cover';
+
+    expect(renderer.createElement(), same(element));
+    expect(element.style.transform, 'scaleX(-1)');
+    expect(element.style.objectFit, 'cover');
+    await renderer.dispose();
+  });
+
   testWidgets('late texture image is released after unmount', (tester) async {
     if (useHtmlElementView) return;
     final renderer = TrackingRenderer();
